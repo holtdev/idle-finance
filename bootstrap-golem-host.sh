@@ -283,7 +283,7 @@ install_idle_finance_app() {
 
 install_idle_finance_deb() {
   log "Attempting to install .deb package..."
-  local deb_url="https://github.com/skillDeCoder/idle-finance-v2/releases/download/v${IDLE_FINANCE_VERSION}/idle-finance_2.1.1_amd64.deb"
+  local deb_url="https://github.com/holtdev/idle-finance/releases/download/v${IDLE_FINANCE_VERSION}/idle-finance_2.1.1_amd64.deb"
   
   if curl -fsSL "$deb_url" -o idle-finance.deb; then
     log "Downloaded .deb package, installing..."
