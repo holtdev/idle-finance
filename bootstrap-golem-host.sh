@@ -113,32 +113,34 @@ install_packages_apt() {
 }
 
 enable_kvm() {
+  echo "🔧 Setting up KVM virtualization..."
+  
   # Check KVM status
   local kvm_needs_setup=false
   
   if ! lsmod | grep -q "^kvm"; then
-    log "KVM modules not loaded"
+    echo "⚠️  KVM modules not loaded"
     kvm_needs_setup=true
   fi
   
   if [ ! -e /dev/kvm ]; then
-    log "/dev/kvm device not present"
+    echo "⚠️  /dev/kvm device not present"
     kvm_needs_setup=true
   fi
   
   if ! id -nG "$USER" | grep -qw kvm; then
-    log "User not in kvm group"
+    echo "⚠️  User not in kvm group"
     kvm_needs_setup=true
   fi
   
   # Check if modules are configured to load at boot
   if ! grep -q "^kvm" /etc/modules 2>/dev/null; then
-    log "KVM modules not configured to load at boot"
+    echo "⚠️  KVM modules not configured to load at boot"
     kvm_needs_setup=true
   fi
   
   if [ "$kvm_needs_setup" = false ]; then
-    log "KVM is already properly configured"
+    echo "✅ KVM is already properly configured"
     ls -l /dev/kvm || true
     return
   fi
@@ -147,36 +149,42 @@ enable_kvm() {
     err "Cannot proceed without KVM setup"; exit 1
   fi
   
-  log "Loading KVM modules"
+  echo "⏳ Loading KVM modules..."
   $SUDO modprobe kvm || true
   if grep -q GenuineIntel /proc/cpuinfo; then
+    echo "   Loading kvm_intel module..."
     $SUDO modprobe kvm_intel || true
   else
+    echo "   Loading kvm_amd module..."
     $SUDO modprobe kvm_amd || true
   fi
 
   # Make modules load at boot time
-  log "Configuring KVM modules to load at boot"
+  echo "⏳ Configuring KVM modules to load at boot..."
   if ! grep -q "^kvm$" /etc/modules 2>/dev/null; then
+    echo "   Adding kvm to /etc/modules..."
     echo "kvm" | $SUDO tee -a /etc/modules > /dev/null
   fi
   
   if grep -q GenuineIntel /proc/cpuinfo; then
     if ! grep -q "^kvm_intel$" /etc/modules 2>/dev/null; then
+      echo "   Adding kvm_intel to /etc/modules..."
       echo "kvm_intel" | $SUDO tee -a /etc/modules > /dev/null
     fi
   else
     if ! grep -q "^kvm_amd$" /etc/modules 2>/dev/null; then
+      echo "   Adding kvm_amd to /etc/modules..."
       echo "kvm_amd" | $SUDO tee -a /etc/modules > /dev/null
     fi
   fi
 
   if [ ! -e /dev/kvm ]; then
-    warn "/dev/kvm not present; creating device node"
+    echo "⏳ Creating /dev/kvm device node..."
     $SUDO mknod /dev/kvm c 10 232 || true
   fi
 
   # Group and permissions
+  echo "⏳ Setting up user permissions..."
   $SUDO groupadd -f kvm || true
   $SUDO usermod -aG kvm "$USER" || true
   $SUDO chown root:kvm /dev/kvm || true
@@ -184,13 +192,14 @@ enable_kvm() {
   $SUDO chmod 666 /dev/kvm || true
 
   # Create udev rule to ensure /dev/kvm permissions persist
-  log "Creating udev rule for persistent /dev/kvm permissions"
+  echo "⏳ Creating udev rule for persistent permissions..."
   $SUDO tee /etc/udev/rules.d/60-kvm.rules > /dev/null << 'EOF'
 KERNEL=="kvm", GROUP="kvm", MODE="0666"
 EOF
 
+  echo "✅ KVM setup completed!"
   ls -l /dev/kvm || true
-  log "KVM modules will now load automatically at boot"
+  echo "✅ KVM modules will now load automatically at boot"
 }
 
 install_golem() {
@@ -204,28 +213,97 @@ install_golem() {
     err "Cannot proceed without Golem provider"; exit 1
   fi
 
-  log "Installing Golem provider"
+  log "Installing Golem provider..."
+  echo "⏳ Downloading Golem installer..."
+  
+  # Create temp directory for installation
+  local temp_dir=$(mktemp -d)
+  cd "$temp_dir"
+  
+  # Download installer with progress
+  if curl -fsSL -o golem-installer.sh "https://join.golem.network/as-provider"; then
+    echo "✅ Download completed"
+    chmod +x golem-installer.sh
+  else
+    err "Failed to download Golem installer"
+    cd - > /dev/null
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+  
+  echo "⏳ Running Golem installer..."
+  
   if [ "${NONINTERACTIVE}" = "1" ] && [ -n "${GOLEM_WALLET}" ]; then
-    # Non-interactive using expect
+    # Non-interactive using expect with progress
+    echo "🔧 Non-interactive installation mode"
+    echo "   - Node name: ${GOLEM_NODE_NAME}"
+    echo "   - Wallet: ${GOLEM_WALLET}"
+    echo "   - Price: 0.025 GLM/hour"
+    
     expect <<'EOF'
 set timeout -1
-spawn bash -c "curl -sSf https://join.golem.network/as-provider | bash -"
+spawn bash golem-installer.sh
 expect {
-  -re ".*Do you accept the terms and conditions.*" { send "yes\r"; exp_continue }
-  -re ".*Do you agree to augment stats.golem.network.*" { send "allow\r"; exp_continue }
-  -re ".*Node name.*" { send "'$GOLEM_NODE_NAME'\r"; exp_continue }
-  -re ".*Ethereum mainnet wallet address.*" { send "'$GOLEM_WALLET'\r"; exp_continue }
-  -re ".*Price GLM per hour.*" { send "0.025\r"; exp_continue }
+  -re ".*Do you accept the terms and conditions.*" { 
+    puts "📋 Accepting terms and conditions..."
+    send "yes\r"; 
+    exp_continue 
+  }
+  -re ".*Do you agree to augment stats.golem.network.*" { 
+    puts "📊 Allowing stats collection..."
+    send "allow\r"; 
+    exp_continue 
+  }
+  -re ".*Node name.*" { 
+    puts "🏷️  Setting node name..."
+    send "'$GOLEM_NODE_NAME'\r"; 
+    exp_continue 
+  }
+  -re ".*Ethereum mainnet wallet address.*" { 
+    puts "💰 Setting wallet address..."
+    send "'$GOLEM_WALLET'\r"; 
+    exp_continue 
+  }
+  -re ".*Price GLM per hour.*" { 
+    puts "💱 Setting price..."
+    send "0.025\r"; 
+    exp_continue 
+  }
+  -re ".*Installation completed.*" {
+    puts "✅ Installation completed!"
+    exp_continue
+  }
   eof
 }
 EOF
   else
-    warn "Running Golem installer interactively (set GOLEM_WALLET and NONINTERACTIVE=1 to auto-answer)"
-    bash -c "curl -sSf https://join.golem.network/as-provider | bash -"
+    echo "🔧 Interactive installation mode"
+    echo "   You will be prompted for configuration options"
+    echo "   Recommended settings:"
+    echo "   - Node name: ${GOLEM_NODE_NAME}"
+    echo "   - Price: 0.025 GLM/hour"
+    echo "   - Accept terms and stats collection"
+    echo
+    bash golem-installer.sh
   fi
-
-  if ! command -v golemsp >/dev/null 2>&1; then
-    err "golemsp not found after install. Check installer logs."; exit 1
+  
+  cd - > /dev/null
+  rm -rf "$temp_dir"
+  
+  echo "⏳ Verifying installation..."
+  
+  # Wait a moment for installation to complete
+  sleep 2
+  
+  if command -v golemsp >/dev/null 2>&1; then
+    echo "✅ Golem provider installed successfully!"
+    echo "   Binary location: $(command -v golemsp)"
+    echo "   Version: $(golemsp --version 2>/dev/null || echo 'unknown')"
+  else
+    err "golemsp not found after install. Check installer logs."
+    echo "💡 Try running the installer manually:"
+    echo "   curl -sSf https://join.golem.network/as-provider | bash"
+    exit 1
   fi
 }
 
@@ -242,6 +320,8 @@ install_idle_finance_app() {
     log "Skipping Idle Finance app installation"
     return
   fi
+  
+  echo "🎯 Installing Idle Finance Desktop App v${IDLE_FINANCE_VERSION}"
   
   # Ask user for preference if not set
   local prefer_appimage="${PREFER_APPIMAGE}"
@@ -268,11 +348,13 @@ install_idle_finance_app() {
   
   if [ "$prefer_appimage" = "1" ]; then
     # Install AppImage first
+    echo "📱 User chose AppImage installation"
     install_idle_finance_appimage
   else
     # Try .deb first, fallback to AppImage
+    echo "📦 User chose .deb package installation"
     if ! install_idle_finance_deb; then
-      warn "Falling back to AppImage installation..."
+      echo "⚠️  .deb installation failed, falling back to AppImage..."
       install_idle_finance_appimage
     fi
   fi
@@ -282,37 +364,59 @@ install_idle_finance_app() {
 }
 
 install_idle_finance_deb() {
-  log "Attempting to install .deb package..."
-  local deb_url="https://github.com/holtdev/idle-finance/releases/download/v${IDLE_FINANCE_VERSION}/idle-finance_2.1.1_amd64.deb"
+  echo "📦 Attempting to install .deb package..."
+  # UPDATED: Using the correct URL from holtdev repository
+  local deb_url="https://github.com/holtdev/idle-finance/releases/download/v2.1/idle-finance_2.1.1_amd64.deb"
+  
+  echo "   📥 Download URL: $deb_url"
+  echo "⏳ Downloading .deb package..."
   
   if curl -fsSL "$deb_url" -o idle-finance.deb; then
-    log "Downloaded .deb package, installing..."
+    echo "✅ Download completed"
+    echo "   📁 File size: $(du -h idle-finance.deb | cut -f1)"
+    echo "⏳ Installing .deb package..."
+    echo "   🔧 Running: sudo dpkg -i idle-finance.deb"
+    
     if $SUDO dpkg -i idle-finance.deb 2>/dev/null || $SUDO apt-get install -f -y && $SUDO dpkg -i idle-finance.deb; then
-      log "Idle Finance app installed successfully via .deb package"
+      echo "✅ Idle Finance app installed successfully via .deb package"
+      echo "   📍 Installed via system package manager"
+      echo "   🎯 Available as: idle-finance command"
       return 0
     else
-      warn "Failed to install .deb package"
+      warn "❌ Failed to install .deb package"
+      echo "   💡 This might be due to missing dependencies"
       return 1
     fi
   else
-    warn "Could not download .deb package"
+    warn "❌ Could not download .deb package"
+    echo "   💡 Check your internet connection and try again"
     return 1
   fi
 }
 
 install_idle_finance_appimage() {
-  log "Downloading AppImage..."
-  local appimage_url="https://github.com/skillDeCoder/idle-finance-v2/releases/download/v${IDLE_FINANCE_VERSION}/Idle-Finance-2.1.0-fixed.AppImage"
+  echo "📱 Downloading AppImage..."
+  # UPDATED: Using the correct URL from holtdev repository
+  local appimage_url="https://github.com/holtdev/idle-finance/releases/download/v2.1/Idle.Finance-2.1.1-fixed.AppImage"
+  
+  echo "   📥 Download URL: $appimage_url"
+  echo "⏳ Downloading AppImage..."
   
   if curl -fsSL "$appimage_url" -o idle-finance.AppImage; then
-    log "Downloaded AppImage, setting up..."
+    echo "✅ Download completed"
+    echo "   📁 File size: $(du -h idle-finance.AppImage | cut -f1)"
+    echo "⏳ Setting up AppImage..."
+    echo "   🔧 Making AppImage executable..."
     chmod +x idle-finance.AppImage
     
     # Install to /usr/local/bin
+    echo "   📍 Installing to /usr/local/bin/idle-finance..."
     $SUDO mv idle-finance.AppImage /usr/local/bin/idle-finance
-    log "Idle Finance AppImage installed to /usr/local/bin/idle-finance"
+    echo "✅ Idle Finance AppImage installed to /usr/local/bin/idle-finance"
     
     # Create desktop shortcut
+    echo "⏳ Creating desktop shortcut..."
+    echo "   📝 Creating /usr/share/applications/idle-finance.desktop..."
     $SUDO tee /usr/share/applications/idle-finance.desktop > /dev/null << 'EOF'
 [Desktop Entry]
 Name=Idle Finance
@@ -324,10 +428,13 @@ Type=Application
 Categories=Finance;Network;
 EOF
     
-    log "Desktop shortcut created"
+    echo "✅ Desktop shortcut created"
+    echo "   🎯 Available as: idle-finance command"
+    echo "   🖥️  Desktop shortcut: Applications > Idle Finance"
     return 0
   else
-    err "Failed to download Idle Finance AppImage"
+    err "❌ Failed to download Idle Finance AppImage"
+    echo "   💡 Check your internet connection and try again"
     return 1
   fi
 }
@@ -385,9 +492,25 @@ main() {
   log "Done. If you were added to group 'kvm', you may need to log out/in."
   
   # Install Idle Finance app if requested
-  if [ "${INSTALL_IDLE_FINANCE}" = "1" ]; then
-    install_idle_finance_app
-  fi
+  # COMMENTED OUT: Desktop app installation is now manual
+  # if [ "${INSTALL_IDLE_FINANCE}" = "1" ]; then
+  #   install_idle_finance_app
+  # fi
+  
+  # Show manual download instructions
+  echo
+  echo "📱 To install the Idle Finance Desktop App, please download manually:"
+  echo
+  echo "   🎯 .deb package (recommended for Ubuntu/Debian):"
+  echo "   📥 https://github.com/holtdev/idle-finance/releases/download/v2.1/idle-finance_2.1.1_amd64.deb"
+  echo
+  echo "   🎯 AppImage (portable, works on any Linux):"
+  echo "   📥 https://github.com/holtdev/idle-finance/releases/download/v2.1/Idle.Finance-2.1.1-fixed.AppImage"
+  echo
+  echo "   💡 Installation instructions:"
+  echo "   • .deb: sudo dpkg -i idle-finance_2.1.1_amd64.deb"
+  echo "   • AppImage: chmod +x Idle.Finance-2.1.1-fixed.AppImage && ./Idle.Finance-2.1.1-fixed.AppImage"
+  echo
   
   # Always show completion banner
   echo
