@@ -695,6 +695,7 @@ install_idle_finance_deb() {
         local total_duration=$((end_time - start_time))
         error_msg "Could not download .deb package after ${total_duration}s"
         info_msg "Check your internet connection and try again"
+        info_msg "Download URL: $deb_url"
         return 1
     fi
 }
@@ -795,6 +796,7 @@ EOF
         local end_time=$(date +%s)
         local total_duration=$((end_time - start_time))
         error_msg "Failed to download Idle Finance AppImage after ${total_duration}s"
+        info_msg "Download URL: $appimage_url"
         info_msg "Check your internet connection and try again"
         return 1
     fi
