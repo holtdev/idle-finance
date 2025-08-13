@@ -268,7 +268,7 @@ ensure_path() {
 # =============================================================================
 
 check_virt_flags() {
-    modern_step 1 7 "Checking CPU Virtualization Support" "Verifying hardware capabilities..."
+    modern_step 1 6 "Checking CPU Virtualization Support" "Verifying hardware capabilities..."
     
     if grep -Eq '(vmx|svm)' /proc/cpuinfo; then
         success_msg "CPU virtualization flags present"
@@ -283,12 +283,99 @@ check_virt_flags() {
 fix_broken_ppas() {
     modern_step 2 7 "Checking for Broken Package Sources" "Scanning package repositories..."
     
+    local broken_ppas=()
+    local fixed_ppas=()
+    
+    # Check for common broken PPAs
     if ls /etc/apt/sources.list.d/*appimagelauncher* >/dev/null 2>&1; then
-        warning_msg "Found broken appimagelauncher PPA entries"
-        if confirm "Remove broken PPA entries?"; then
-            info_msg "Removing broken appimagelauncher PPA entries"
-            $SUDO add-apt-repository -y -r ppa:appimagelauncher-team/stable || true
-            $SUDO rm -f /etc/apt/sources.list.d/appimagelauncher-team-ubuntu-stable*.list || true
+        broken_ppas+=("appimagelauncher-team/stable")
+    fi
+    
+    if ls /etc/apt/sources.list.d/*kazam* >/dev/null 2>&1; then
+        broken_ppas+=("sylvain-pineau/kazam")
+    fi
+    
+    # Check for any PPA files that might be broken
+    for ppa_file in /etc/apt/sources.list.d/*.list; do
+        if [ -f "$ppa_file" ]; then
+            if grep -q "ppa.launchpadcontent.net" "$ppa_file" 2>/dev/null; then
+                local ppa_name=$(basename "$ppa_file" .list | sed 's/-ubuntu-.*//')
+                if [ -n "$ppa_name" ]; then
+                    # Try to detect if this PPA is broken by checking if it's in our known broken list
+                    # or if it's likely to be problematic
+                    case "$ppa_name" in
+                        *kazam*|*appimagelauncher*)
+                            if [[ ! " ${broken_ppas[@]} " =~ " ${ppa_name} " ]]; then
+                                broken_ppas+=("$ppa_name")
+                            fi
+                            ;;
+                    esac
+                fi
+            fi
+        fi
+    done
+    
+    # Also check for any PPA files that might cause 404 errors
+    # This catches PPAs that don't have packages for the current Ubuntu version
+    for ppa_file in /etc/apt/sources.list.d/*.list; do
+        if [ -f "$ppa_file" ]; then
+            if grep -q "ppa.launchpadcontent.net" "$ppa_file" 2>/dev/null; then
+                # Extract PPA name from the file
+                local ppa_url=$(grep "ppa.launchpadcontent.net" "$ppa_file" | head -1)
+                if [ -n "$ppa_url" ]; then
+                    # Extract the PPA name from the URL
+                    local ppa_name=$(echo "$ppa_url" | sed -n 's/.*ppa\.launchpadcontent\.net\/\([^\/]*\/[^\/]*\).*/\1/p')
+                    if [ -n "$ppa_name" ] && [[ ! " ${broken_ppas[@]} " =~ " ${ppa_name} " ]]; then
+                        # Check if this PPA is likely to be problematic
+                        case "$ppa_name" in
+                            *kazam*|*appimagelauncher*|*screenrec*)
+                                broken_ppas+=("$ppa_name")
+                                ;;
+                        esac
+                    fi
+                fi
+            fi
+        fi
+    done
+    
+    if [ ${#broken_ppas[@]} -gt 0 ]; then
+        warning_msg "Found potentially broken PPA entries: ${broken_ppas[*]}"
+        warning_msg "These PPAs may cause '404 Not Found' errors during package updates"
+        if confirm "Remove broken PPA entries to fix package update issues?"; then
+            for ppa in "${broken_ppas[@]}"; do
+                info_msg "Removing broken PPA: $ppa"
+                case "$ppa" in
+                    "appimagelauncher-team/stable")
+                        $SUDO add-apt-repository -y -r ppa:appimagelauncher-team/stable || true
+                        $SUDO rm -f /etc/apt/sources.list.d/appimagelauncher-team-ubuntu-stable*.list || true
+                        fixed_ppas+=("$ppa")
+                        ;;
+                    "sylvain-pineau/kazam")
+                        $SUDO add-apt-repository -y -r ppa:sylvain-pineau/kazam || true
+                        $SUDO rm -f /etc/apt/sources.list.d/sylvain-pineau-ubuntu-kazam*.list || true
+                        fixed_ppas+=("$ppa")
+                        ;;
+                    *)
+                        # Generic removal for other PPAs
+                        $SUDO add-apt-repository -y -r "ppa:$ppa" || true
+                        $SUDO rm -f "/etc/apt/sources.list.d/${ppa//\//-}-ubuntu-*.list" || true
+                        fixed_ppas+=("$ppa")
+                        ;;
+                esac
+            done
+            
+            if [ ${#fixed_ppas[@]} -gt 0 ]; then
+                success_msg "Removed broken PPAs: ${fixed_ppas[*]}"
+                info_msg "Package sources should now update cleanly"
+                
+                # Try a test update to verify the fix
+                info_msg "Testing package update..."
+                if $SUDO apt-get update >/dev/null 2>&1; then
+                    success_msg "Package update test successful!"
+                else
+                    warning_msg "Package update still has issues. You may need to manually fix remaining repositories."
+                fi
+            fi
         fi
     else
         success_msg "No broken package sources detected"
@@ -300,7 +387,7 @@ fix_broken_ppas() {
 # =============================================================================
 
 install_packages_apt() {
-    modern_step 3 7 "Installing System Packages" "Setting up required dependencies..."
+    modern_step 2 6 "Installing System Packages" "Setting up required dependencies..."
     
     # Check what's missing
     local missing_packages=()
@@ -327,7 +414,11 @@ install_packages_apt() {
     start_timer "package_installation"
     
     info_msg "Updating package indexes..."
-    $SUDO apt-get update
+    if ! $SUDO apt-get update; then
+        warning_msg "Package update failed. This might be due to broken repositories."
+        warning_msg "Attempting to continue with installation..."
+        info_msg "If installation fails, you may need to manually fix broken repositories first."
+    fi
     
     info_msg "Installing base tools..."
     $SUDO apt-get install -y curl expect ca-certificates
@@ -338,6 +429,14 @@ install_packages_apt() {
     # Install modern UI tools
     info_msg "Installing modern UI components..."
     $SUDO apt-get install -y figlet
+    
+    # Fix legacy trusted.gpg keyring warnings
+    info_msg "Checking for legacy GPG keyring issues..."
+    if [ -f /etc/apt/trusted.gpg ] && [ -s /etc/apt/trusted.gpg ]; then
+        warning_msg "Found legacy trusted.gpg keyring. This may cause deprecation warnings."
+        info_msg "Consider migrating to /etc/apt/trusted.gpg.d/ for better security"
+        info_msg "This is a warning only and won't affect functionality"
+    fi
     
     # Install colorful text tools
     info_msg "Installing colorful text tools..."
@@ -410,7 +509,7 @@ install_packages_apt() {
 # =============================================================================
 
 enable_kvm() {
-    modern_step 4 7 "Setting up KVM Virtualization" "Configuring hardware acceleration..."
+    modern_step 3 6 "Setting up KVM Virtualization" "Configuring hardware acceleration..."
     
     # Check KVM status
     local kvm_needs_setup=false
@@ -509,7 +608,7 @@ EOF
 # =============================================================================
 
 install_golem() {
-    modern_step 5 7 "Installing Golem Provider" "Setting up distributed computing node..."
+    modern_step 4 6 "Installing Golem Provider" "Setting up distributed computing node..."
     
     if command -v golemsp >/dev/null 2>&1; then
         success_msg "Golem already installed: $(golemsp --version 2>/dev/null || echo installed)"
@@ -803,7 +902,7 @@ EOF
 }
 
 install_idle_finance_app() {
-    modern_step 6 7 "Installing Idle Finance Desktop App" "Setting up user interface..."
+    modern_step 5 6 "Installing Idle Finance Desktop App" "Setting up user interface..."
     
     info_msg "Installing Idle Finance Desktop App"
     
@@ -817,9 +916,9 @@ install_idle_finance_app() {
     local prefer_appimage="${PREFER_APPIMAGE}"
     if [ -z "$prefer_appimage" ]; then
         echo
-        echo "${INFO}Choose installation method:${RESET}"
-        echo "${CYAN}1)${RESET} .deb package (recommended for Ubuntu/Debian - better integration)"
-        echo "${CYAN}2)${RESET} AppImage (portable, works on any Linux)"
+        info_msg "Choose installation method:"
+        info_msg "1) .deb package (recommended for Ubuntu/Debian - better integration)"
+        info_msg "2) AppImage (portable, works on any Linux)"
         echo
         while true; do
             printf "${WARNING}Enter choice (1 or 2):${RESET} "
@@ -856,7 +955,7 @@ install_idle_finance_app() {
 # =============================================================================
 
 verify_summary() {
-    modern_step 7 7 "Verifying Installation" "Final system check..."
+    modern_step 6 6 "Verifying Installation" "Final system check..."
     
     info_msg "Verification summary"
     if command -v golemsp >/dev/null 2>&1; then
@@ -918,7 +1017,7 @@ main() {
     require_cmd curl
     ensure_path
     check_virt_flags
-    fix_broken_ppas
+    # fix_broken_ppas  # Skipped - PPA check is optional
     install_packages_apt
     enable_kvm
     install_golem
